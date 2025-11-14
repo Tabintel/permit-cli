@@ -12,7 +12,6 @@ coverage
 !templates/
 !templates/*.tf
 !source/templates/*.tf
-!source/templates/lms-app
 
 # .tfstate files
 *.tfstate

@@ -23,6 +23,7 @@ Designed with developer experience in mind, the CLI makes it easy to integrate *
 - 🏗️ Automate policy operations in CI/CD with IaC and GitOps
 - ✨ Generate policies from natural language using AI
 - 🔐 Manage users, roles, and permissions directly from your terminal
+- 🌍 Multi-region support for US and EU deployments
 
 > :bulb: The CLI is fully open source and is built with Pastel, using TypeScript and a React-style architecture. Contributions welcome!
 
@@ -118,6 +119,7 @@ Below is a categorized overview of all available Permit CLI commands:
 - [OpenAPI -x Extensions for Policy Configuration](#openapi--x-permit-extensions-for-policy-configuration)
 
   - [`permit env apply openapi`](#permit-env-apply-openapi) - Create a full policy schema in Permit by reading an OpenAPI spec file and using `-x-permit` extensions, enabling the use of OpenAPI schema as a source of authorization policy configuration.
+  - [`permit env apply trino`](#permit-env-apply-trino) - Create a full policy schema in Permit by introspecting a Trino cluster's database schema, including catalogs, schemas, tables, and columns.
 
 ### [Custom Rego (OPA) and GitOps](#custom-rego-opa-and-gitops-1)
 
@@ -145,11 +147,46 @@ The `login` command will take you to the browser to perform user authentication 
 
 - `--api-key <string>` - store a Permit API key in your workstation keychain instead of running browser authentication
 - `--workspace <string>` - predefined workspace key to skip the workspace selection step
+- `--region <us | eu>` - specify the Permit region to use (`default: us`). The region determines which Permit.io API endpoints the CLI will communicate with.
 
-**Example:**
+**Examples:**
+
+Login with default US region:
 
 ```bash
 $ permit login
+```
+
+Login with EU region:
+
+```bash
+$ permit login --region eu
+```
+
+Login with API key and EU region:
+
+```bash
+$ permit login --api-key permit_key_abc123 --region eu
+```
+
+**Region Support:**
+
+Permit.io operates in multiple regions. When you log in with a specific region, the CLI will:
+
+- Store your region preference in your system keychain
+- Use the appropriate regional endpoints for all subsequent commands
+- Generate Terraform configurations with the correct regional API URLs
+
+Available regions:
+
+- `us` (default) - United States region (`https://api.permit.io`)
+- `eu` - European Union region (`https://api.eu.permit.io`)
+
+You can also set the region using the `PERMIT_REGION` environment variable:
+
+```bash
+export PERMIT_REGION=eu
+permit login
 ```
 
 ---
@@ -386,6 +423,8 @@ Export your Permit environment configuration as a Terraform HCL file.
 
 This is useful for users who want to start working with Terraform after configuring their Permit settings through the UI or API. The command exports all environment content (resources, roles, user sets, resource sets, condition sets) in the Permit Terraform provider format.
 
+**Note:** The export includes all roles, including default roles (admin, editor, viewer) with their actual permissions. This allows you to manage role permissions consistently across environments using Infrastructure as Code. The Terraform provider will update existing roles or create them if they don't exist.
+
 **Arguments (Optional)**
 
 - `--api-key <string>` - a Permit API key to authenticate the operation. If not provided, the command will use the AuthProvider to get the API key you logged in with.
@@ -410,6 +449,28 @@ Print out the output to the console -
 ```bash
 $ permit env export terraform
 ```
+
+**Region Support:**
+
+The generated Terraform configuration will automatically use the correct API URL based on your configured region:
+
+- **US region**: `api_url = "https://api.permit.io"`
+- **EU region**: `api_url = "https://api.eu.permit.io"`
+
+The region is determined by:
+
+1. The `PERMIT_REGION` environment variable (if set)
+2. The region stored from your last `permit login --region <region>` command
+3. Defaults to `us` if no region is specified
+
+Example for EU region:
+
+```bash
+$ export PERMIT_REGION=eu
+$ permit env export terraform --file permit-eu-config.tf
+```
+
+This ensures that when you run `terraform apply`, the Terraform provider will communicate with the correct regional Permit.io API.
 
 ## Fine-Grained Authorization Configuration
 
@@ -570,18 +631,99 @@ For the more complex extensions that accept objects instead of strings, here's t
 }
 ```
 
-#### URL Mapping
+---
 
-After creating the policy elements based on the `-x-permit` extensions, the command will automatically create URL mappings in Permit. These mappings connect API endpoints to the appropriate resources and actions for runtime authorization checks.
+### `env apply trino`
 
-For each endpoint with the required extensions, a mapping rule will be created with:
+This command introspects a Trino cluster and creates a full Permit policy schema by mapping catalogs, schemas, tables, views, materialized views, columns, functions, and procedures to Permit resources and actions. It is designed to work with any Trino-connected database (e.g., PostgreSQL, MySQL) and uses a robust passthrough strategy to discover all relevant objects.
 
-- URL path from the OpenAPI spec
-- HTTP method
-- Resource from `x-permit-resource`
-- Action from `x-permit-action` or the HTTP method
+**Arguments (Required):**
 
-This enables Permit to perform authorization checks directly against your API endpoints.
+- `--url <string>` - Trino cluster URL (e.g., http://localhost:8080)
+- `--user <string>` - Trino username
+
+**Arguments (Optional):**
+
+- `--api-key <string>` - API key for Permit authentication
+- `--password <string>` - Trino password or authentication token
+- `--catalog <string>` - Restrict to a specific catalog
+- `--schema <string>` - Restrict to a specific schema
+
+**Examples:**
+
+Connect to Trino and sync all schemas:
+
+```bash
+permit env apply trino --url http://localhost:8080 --user admin
+```
+
+Sync with authentication and a specific catalog:
+
+```bash
+permit env apply trino --url http://localhost:8080 --user admin --password secret --catalog postgresql
+```
+
+Sync a specific schema with API key:
+
+```bash
+permit env apply trino --url http://localhost:8080 --user admin --api-key permit_key --catalog postgresql --schema public
+```
+
+#### Resource Mapping
+
+- **Catalogs** → `trino-catalog-<catalog>` (e.g., `trino-catalog-postgresql`)
+- **Schemas** → `trino-schema-<catalog>-<schema>`
+- **Tables** → `trino-table-<catalog>-<schema>-<table>`
+- **Views** → `trino-view-<catalog>-<schema>-<view>`
+- **Materialized Views** → `trino-materialized_view-<catalog>-<schema>-<mv>`
+- **Columns** → `trino-column-<catalog>-<schema>-<table>-<column>`
+- **Functions** → `trino-function-<catalog>-<schema>-<function>`
+- **Procedures** → `trino-procedure-<catalog>-<schema>-<procedure>`
+- **System Resource** → `trino_sys` (Trino System resource for system-wide actions)
+
+Each table resource includes its columns as attributes with mapped data types:
+
+- `varchar`, `text` → `string`
+- `integer`, `bigint`, `decimal` → `number`
+- `boolean` → `bool`
+- `timestamp`, `date` → `time`
+- `json` → `json`
+- `array` → `array`
+
+#### Actions
+
+- **Catalog actions:** `AccessCatalog`, `CreateCatalog`, `DropCatalog`, `FilterCatalogs`
+- **Schema actions:** `CreateSchema`, `DropSchema`, `RenameSchema`, `SetSchemaAuthorization`, `ShowSchemas`, `FilterSchemas`, `ShowCreateSchema`
+- **Table/Column actions:** `ShowCreateTable`, `CreateTable`, `DropTable`, `RenameTable`, `SetTableProperties`, `SetTableComment`, `AddColumn`, `AlterColumn`, `DropColumn`, `RenameColumn`, `SelectFromColumns`, `InsertIntoTable`, `DeleteFromTable`, `TruncateTable`, `UpdateTableColumns`, `ShowTables`, `FilterTables`, `ShowColumns`, `FilterColumns`, `SetTableAuthorization`
+- **View actions:** `CreateView`, `RenameView`, `DropView`, `SetViewAuthorization`, `SetViewComment`, `CreateViewWithSelectFromColumns`
+- **Materialized View actions:** `CreateMaterializedView`, `RefreshMaterializedView`, `SetMaterializedViewProperties`, `DropMaterializedView`, `RenameMaterializedView`
+- **Function actions:** `ShowFunctions`, `FilterFunctions`, `ExecuteFunction`, `CreateFunction`, `DropFunction`, `ShowCreateFunction`, `CreateViewWithExecuteFunction`
+- **Procedure actions:** `ExecuteProcedure`, `ExecuteTableProcedure`
+- **System actions (on `trino_sys`):**  
+  `ImpersonateUser`, `ExecuteQuery`, `ViewQueryOwnedBy`, `FilterViewQueryOwnedBy`, `KillQueryOwnedBy`, `ReadSystemInformation`, `WriteSystemInformation`, `SetSystemSessionProperty`, `GetRowFilters`, `GetColumnMask`
+
+#### Discovery Strategy
+
+- **Tables, Views, Materialized Views:**  
+  Detected using a combination of Trino metadata, table comments, `SHOW CREATE TABLE`, and naming conventions.
+- **Functions and Procedures:**  
+  Discovered using Trino's passthrough feature (`TABLE(catalog.system.query(...))`) to query the underlying database's system tables. **Function and procedure discovery is only supported for PostgreSQL and MySQL (via passthrough); Trino UDFs and other database types are not supported.** For example, `pg_catalog.pg_proc` for PostgreSQL and `information_schema.routines` for MySQL.
+- **System/Admin resources:**  
+  By default, only user/business data resources are included. System/admin/internal catalogs and schemas are excluded unless explicitly requested.
+
+#### System Resource
+
+A special resource named `Trino System` with key `trino_sys` is always created, representing system-wide Trino actions.
+
+#### Testing
+
+Use the provided Docker Compose setup in `tests/trino/` for end-to-end testing:
+
+```bash
+cd tests/trino
+docker-compose up -d
+permit env apply trino --url http://localhost:8080 --user test
+```
 
 ---
 
@@ -923,6 +1065,34 @@ Applies a policy template to your current environment, which is useful for quick
 ```bash
 $ permit env template apply --template mesa-verde-banking-dem
 ```
+---
+
+#### Learning management system template example
+This Terraform configuration defines a role- and attribute-based access control (ABAC + RBAC) model using the Permit.io provider. It provisions resources, user attributes, user sets, and conditional access rules for a course management system.
+
+**Key components:**
+
+- Provider setup: Connects to Permit.io via api_url and api_key.
+
+- Resources: Defines a course resource with actions (enroll, read, create, delete) and attributes (department, studentIds, teacherId).
+
+- User attributes: Establishes user fields like department, id, and role.
+
+- User sets: Groups users into roles (admin, teacher, student) based on their attributes.
+
+- Resource sets: Creates logical collections of courses based on conditions such as department or enrollment.
+
+- Condition set rules: Links user sets and resource sets with permissions to control who can read, create, or enroll in courses.
+
+This configuration provides a structured example of how to model fine-grained permissions in an education-style domain using Terraform and Permit.io.
+
+**Usage**
+1. Install the Permit CLI: `npm install -g @permitio/cli`
+2. Apply the template:
+```bash
+$ permit env template apply --template lmsapp
+```
+3. Replace `{{API_KEY}}` in `lmsapp.tf` with your Permit API key.
 
 ### API Commands
 
@@ -1367,13 +1537,15 @@ paths:
       # ...
 ```
 
-A more detailed example [is available here](https://github.com/daveads/openapispec)
+Check this repo for a good [example](https://github.com/daveads/openapispec)
+
+#### Complex Extension Objects
 
 For the more complex extensions that accept objects instead of strings, here's the expected structure:
 
-- Object Structure: `x-permit-relation`
+##### `x-permit-relation` Object Structure
 
-```
+```json
 {
 	"subject_resource": "string", // Required: The source resource in the relation
 	"object_resource": "string", // Required: The target resource in the relation
@@ -1382,9 +1554,9 @@ For the more complex extensions that accept objects instead of strings, here's t
 }
 ```
 
-- Object Structure: `x-permit-derived-role`
+##### `x-permit-derived-role` Object Structure
 
-```
+```json
 {
 	"key": "string", // Optional: Unique identifier for the derived role
 	"name": "string", // Optional: Human-readable name for the derived role
@@ -1394,47 +1566,13 @@ For the more complex extensions that accept objects instead of strings, here's t
 }
 ```
 
-## Custom Rego (OPA) and GitOps
-
-Extend and customize authorization policies with GitOps flows and custom Rego logic.
-
-### Sync policies to Git repositories
-
-Export, version, and manage authorization policies as code: all through CLI commands
-
-#### `permit gitops create github`
-
-This command will configure your Permit environment to use the GitOps flow with GitHub. This is useful when you want to manage your policies in your own Git repository and extend them with custom policy code.
-
-**Arguments (Required)**
-
-- `--inactive <boolean>` - set the environment to inactive after configuring GitOps (`default:false`)
-
-**Example:**
-
-```
-gitops create github --inactive true
-```
-
 ---
 
-#### `permit gitops env clone`
+### `opa`
 
-This clones the environment or the complete project from the active GitOps repository.
+This collection of commands aims to create new experiences for developers working with Open Policy Agent (OPA) in their projects.
 
-**Arguments (Optional)**
-
-- `--api-key <string>` - The API key to select the project. The API Key is of the scope `Project`.
-- `--dry-run` - Instead of executing the code, it displays the command to be executed.
-- `--project` - Instead of selecting an environment branch to clone, it performs the standard clone operation.
-
-### Extend Predefined Policies with Custom Rego (Open Policy Agent)
-
-Use the CLI to modify and fine-tune Open Policy Agent (OPA) Rego policies while maintaining system stability.
-
----
-
-#### `permit opa policy`
+### `opa policy`
 
 This command will print the available policies of an active OPA instance. This is useful when you want to see the policies in your OPA instance without fetching them from the OPA server.
 
