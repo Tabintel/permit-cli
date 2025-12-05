@@ -132,7 +132,6 @@ web_modules/
 
 terraform_server/.env
 
-
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
