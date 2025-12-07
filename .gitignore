@@ -13,6 +13,7 @@ coverage
 !templates/*.tf
 !source/templates/*.tf
 
+
 # .tfstate files
 *.tfstate
 *.tfstate.*
